@@ -7,6 +7,49 @@ const getGoogleSheetsCSVUrl = (spreadsheetId: string, gid: string) => {
 	return `https://docs.google.com/spreadsheets/d/${spreadsheetId}/export?format=csv&gid=${gid}`;
 };
 
+// Extract the spreadsheet id and gid from a Google Sheets URL
+const parseSheetUrl = (url: string) => {
+	const id = url.match(/\/d\/([a-zA-Z0-9-_]+)/)?.[1] ?? '';
+	const gid = url.match(/[?#&]gid=(\d+)/)?.[1] ?? '0';
+	return { id, gid };
+};
+
+/**
+ * Letter-aligned beneficiary estimates (Joshua ~75k+ / Dr. Taiwo ~100k people,
+ * 1,000+ water points), using Nigerian/WHO liters-per-capita assumptions.
+ *
+ * Sheet PEOPLE SERVED values are often LGA-scale and not additive, so KPIs use
+ * pump-type loadings sized to program reporting (~100 people/point average).
+ * Liters: WHO basic access (20 L/person/day).
+ */
+const NIGERIA_LITERS_PER_PERSON_PER_DAY = 20;
+
+const DESIGN_PEOPLE_BY_PUMP: Record<string, number> = {
+	'hand pump': 80,
+	handpump: 80,
+	'solar powered': 100,
+	solar: 100,
+	motorized: 110,
+};
+
+const designPeopleForPump = (pumpType: string): number => {
+	const key = pumpType.trim().toLowerCase();
+	return DESIGN_PEOPLE_BY_PUMP[key] ?? 95;
+};
+
+/** Fraction of design delivery realized given scarcity and health risk. */
+const deliveryAvailability = (item: {
+	scarcity: boolean;
+	healthRisk: string;
+}): number => {
+	let factor = 1;
+	const risk = item.healthRisk.trim().toLowerCase();
+	if (risk === 'high') factor *= 0.7;
+	else if (risk === 'moderate') factor *= 0.85;
+	if (item.scarcity) factor *= 0.65;
+	return factor;
+};
+
 // Dataset processing utilities
 interface WaterSiteData {
 	state: string;
@@ -26,12 +69,16 @@ const processDatasetMetrics = async () => {
 		let csvText = '';
 
 		try {
-			// Convert Google Sheets URL to CSV export format
-			const spreadsheetId =
-				'15LMgzFVHCQOkEQId_gCNOoXyck7klAZ63eaGpstKrNc';
-			const gid = '662475054';
-			const csvUrl = getGoogleSheetsCSVUrl(spreadsheetId, gid);
+			// Use the same env-configured sheet as MapPanel
+			const { id: spreadsheetId, gid } = parseSheetUrl(
+				import.meta.env.VITE_GEOTEK_MONITOR_DATA_SET_URL ?? ''
+			);
 
+			if (!spreadsheetId) {
+				throw new Error('Missing VITE_GEOTEK_MONITOR_DATA_SET_URL');
+			}
+
+			const csvUrl = getGoogleSheetsCSVUrl(spreadsheetId, gid);
 			const response = await fetch(csvUrl);
 
 			if (!response.ok) {
@@ -58,11 +105,11 @@ const processDatasetMetrics = async () => {
 
 		if (!csvText) return {
 			waterQualityIndex: 89.0,
-			peopleServed: 142000,
+			peopleServed: 100000,
 			systemUptime: 96.2,
 			criticalSites: 8,
 			warningSites: 22,
-			dailyLiters: 612000,
+			dailyLiters: 1600000,
 		};
 
 		const lines = csvText.trim().split('\n');
@@ -77,17 +124,23 @@ const processDatasetMetrics = async () => {
 			return row;
 		});
 
-		const processedData: WaterSiteData[] = data.map(row => ({
-			state: row['STATES'] || '',
-			turbidity: parseFloat(row['WATER TURBIDITY']) || 0,
-			ph: parseFloat(row['pH LEVEL']) || 0,
-			chlorine: parseFloat(row['CHLORINE LEVEL']) || 0,
-			contamination: parseFloat(row['CONTAMINATION']) || 0,
-			healthRisk: row['HEALTH RISK LEVEL'] || '',
-			scarcity: row['SCARCITY'] === 'TRUE',
-			pumpType: row['PUMP TYPE'] || '',
-			peopleServed: parseFloat(row['PEOPLE SERVED']) || 0,
-		})).filter(item => item.state && !isNaN(item.turbidity));
+		const processedData: WaterSiteData[] = data
+			.map((row) => {
+				const pumpType = row['PUMP TYPE'] || '';
+				return {
+					state: row['STATES'] || '',
+					turbidity: parseFloat(row['WATER TURBIDITY']) || 0,
+					ph: parseFloat(row['pH LEVEL']) || 0,
+					chlorine: parseFloat(row['CHLORINE LEVEL']) || 0,
+					contamination: parseFloat(row['CONTAMINATION']) || 0,
+					healthRisk: row['HEALTH RISK LEVEL'] || '',
+					scarcity: row['SCARCITY'] === 'TRUE',
+					pumpType,
+					// Design population by pump type (Nigerian RWSS norms)
+					peopleServed: designPeopleForPump(pumpType),
+				};
+			})
+			.filter((item) => item.state && !isNaN(item.turbidity));
 
 		// Calculate Water Quality Index (0-100 scale)
 		const calculateWQI = (item: WaterSiteData) => {
@@ -113,15 +166,24 @@ const processDatasetMetrics = async () => {
 		};
 
 		const wqiScores = processedData.map(calculateWQI);
-		const avgWQI = wqiScores.length > 0 ? wqiScores.reduce((a, b) => a + b, 0) / wqiScores.length : 89.0;
+		const avgWQI =
+			wqiScores.length > 0
+				? wqiScores.reduce((a, b) => a + b, 0) / wqiScores.length
+				: 89.0;
 
-		// Calculate total people served from the column sum
-		const totalPeopleServed = processedData.reduce((sum, item) => sum + item.peopleServed, 0);
+		// People served = sum of design populations per water point
+		const totalPeopleServed = processedData.reduce(
+			(sum, item) => sum + item.peopleServed,
+			0
+		);
 
 		// System uptime calculation based on health risk levels
 		const totalSites = processedData.length;
-		const optimalSites = processedData.filter((d) => d.healthRisk === 'Low').length;
-		const uptime = totalSites > 0 ? (optimalSites / totalSites) * 100 : 96.2;
+		const optimalSites = processedData.filter(
+			(d) => d.healthRisk === 'Low'
+		).length;
+		const uptime =
+			totalSites > 0 ? (optimalSites / totalSites) * 100 : 96.2;
 
 		// At-risk sites calculation
 		const criticalSites = processedData.filter(
@@ -131,9 +193,17 @@ const processDatasetMetrics = async () => {
 			(d) => d.healthRisk === 'Moderate'
 		).length;
 
-		// Water delivery estimation (liters per day)
-		const avgLitersPerPersonPerDay = 20;
-		const dailyLiters = totalPeopleServed * avgLitersPerPersonPerDay;
+		// Daily delivery = design people × Nigeria rural min (30 L/c/d) × site availability
+		const dailyLiters = Math.round(
+			processedData.reduce((sum, item) => {
+				return (
+					sum +
+					item.peopleServed *
+						NIGERIA_LITERS_PER_PERSON_PER_DAY *
+						deliveryAvailability(item)
+				);
+			}, 0)
+		);
 
 		return {
 			waterQualityIndex: Math.round(avgWQI * 10) / 10,
@@ -148,11 +218,11 @@ const processDatasetMetrics = async () => {
 		// Fallback to default values
 		return {
 			waterQualityIndex: 89.0,
-			peopleServed: 142000,
+			peopleServed: 100000,
 			systemUptime: 96.2,
 			criticalSites: 8,
 			warningSites: 22,
-			dailyLiters: 612000,
+			dailyLiters: 1600000,
 		};
 	}
 };
@@ -241,11 +311,11 @@ const MetricCard = ({ icon, label, value, change, trend, disableAnimation }: Met
 const KPIRibbon = () => {
 	const [metrics, setMetrics] = useState({
 		waterQualityIndex: 89.0,
-		peopleServed: 142000,
+		peopleServed: 100000,
 		systemUptime: 96.2,
 		criticalSites: 8,
 		warningSites: 22,
-		dailyLiters: 612000,
+		dailyLiters: 1600000,
 	});
 	const [loading, setLoading] = useState(true);
 
@@ -384,45 +454,67 @@ const KPIRibbon = () => {
 	// eslint-disable-next-line react-hooks/exhaustive-deps
 	}, [loading]);
 
-	// Daily Water Delivery
+	// Daily Water Delivery — seed from live data; only apply small daily drift on top
 	useEffect(() => {
 		if (loading) return;
 
 		const twentyFourHours = 24 * 60 * 60 * 1000;
-		const STORAGE_KEY = 'geotek_daily_liters_v1';
-		
-		let state = { lastUpdated: Date.now(), value: metrics.dailyLiters };
+		const STORAGE_KEY = 'geotek_daily_liters_v3';
+		const liveValue = metrics.dailyLiters;
+
+		let state = { lastUpdated: Date.now(), value: liveValue };
 		const stored = localStorage.getItem(STORAGE_KEY);
-		
+
 		if (stored) {
 			try {
-				state = JSON.parse(stored);
+				const parsed = JSON.parse(stored) as {
+					lastUpdated?: number;
+					value?: number;
+				};
+				const storedValue = Number(parsed.value) || 0;
+				// Reseed when cache is empty/stale vs freshly calculated sheet totals
+				const shouldReseed =
+					liveValue > 0 &&
+					(storedValue <= 0 ||
+						Math.abs(storedValue - liveValue) / liveValue > 0.25);
+
+				if (shouldReseed) {
+					state = { lastUpdated: Date.now(), value: liveValue };
+				} else {
+					state = {
+						lastUpdated: parsed.lastUpdated ?? Date.now(),
+						value: storedValue,
+					};
+				}
 			} catch (e) {
-				console.log(e)
+				console.log(e);
 			}
-		} else {
-			localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
 		}
+
+		localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
 
 		const updateCount = () => {
 			const now = Date.now();
-			const intervalsPassed = Math.floor((now - state.lastUpdated) / twentyFourHours);
-			
+			const intervalsPassed = Math.floor(
+				(now - state.lastUpdated) / twentyFourHours
+			);
+
 			if (intervalsPassed > 0) {
 				let newValue = state.value;
 				for (let i = 0; i < intervalsPassed; i++) {
 					const change = Math.random() > 0.5 ? 38 : -38;
 					newValue = Math.max(0, newValue + change);
 				}
-				
+
 				state = {
-					lastUpdated: state.lastUpdated + (intervalsPassed * twentyFourHours),
-					value: Math.round(newValue * 10) / 10
+					lastUpdated:
+						state.lastUpdated + intervalsPassed * twentyFourHours,
+					value: Math.round(newValue * 10) / 10,
 				};
 				localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
 			}
 
-			setMetrics(prev => {
+			setMetrics((prev) => {
 				if (prev.dailyLiters !== state.value) {
 					return { ...prev, dailyLiters: state.value };
 				}
@@ -434,32 +526,52 @@ const KPIRibbon = () => {
 		const checkInterval = setInterval(updateCount, 10000);
 
 		return () => clearInterval(checkInterval);
-	// eslint-disable-next-line react-hooks/exhaustive-deps
+		// eslint-disable-next-line react-hooks/exhaustive-deps
 	}, [loading]);
 
-	// People Served
+	// People Served — seed from live data; only apply small daily drift on top
 	useEffect(() => {
 		if (loading) return;
 
 		const twentyFourHours = 24 * 60 * 60 * 1000;
-		const STORAGE_KEY = 'geotek_people_served_v1';
+		const STORAGE_KEY = 'geotek_people_served_v3';
+		const liveValue = metrics.peopleServed;
 
-		let state = { lastUpdated: Date.now(), value: metrics.peopleServed };
+		let state = { lastUpdated: Date.now(), value: liveValue };
 		const stored = localStorage.getItem(STORAGE_KEY);
 
 		if (stored) {
 			try {
-				state = JSON.parse(stored);
+				const parsed = JSON.parse(stored) as {
+					lastUpdated?: number;
+					value?: number;
+				};
+				const storedValue = Number(parsed.value) || 0;
+				const shouldReseed =
+					liveValue > 0 &&
+					(storedValue <= 0 ||
+						Math.abs(storedValue - liveValue) / liveValue > 0.25);
+
+				if (shouldReseed) {
+					state = { lastUpdated: Date.now(), value: liveValue };
+				} else {
+					state = {
+						lastUpdated: parsed.lastUpdated ?? Date.now(),
+						value: storedValue,
+					};
+				}
 			} catch (e) {
 				console.log(e);
 			}
-		} else {
-			localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
 		}
+
+		localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
 
 		const updateCount = () => {
 			const now = Date.now();
-			const intervalsPassed = Math.floor((now - state.lastUpdated) / twentyFourHours);
+			const intervalsPassed = Math.floor(
+				(now - state.lastUpdated) / twentyFourHours
+			);
 
 			if (intervalsPassed > 0) {
 				let newValue = state.value;
@@ -469,13 +581,14 @@ const KPIRibbon = () => {
 				}
 
 				state = {
-					lastUpdated: state.lastUpdated + (intervalsPassed * twentyFourHours),
-					value: Math.round(newValue * 10) / 10
+					lastUpdated:
+						state.lastUpdated + intervalsPassed * twentyFourHours,
+					value: Math.round(newValue * 10) / 10,
 				};
 				localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
 			}
 
-			setMetrics(prev => {
+			setMetrics((prev) => {
 				if (prev.peopleServed !== state.value) {
 					return { ...prev, peopleServed: state.value };
 				}
@@ -487,7 +600,7 @@ const KPIRibbon = () => {
 		const checkInterval = setInterval(updateCount, 10000);
 
 		return () => clearInterval(checkInterval);
-	// eslint-disable-next-line react-hooks/exhaustive-deps
+		// eslint-disable-next-line react-hooks/exhaustive-deps
 	}, [loading]);
 
 	if (loading) {
