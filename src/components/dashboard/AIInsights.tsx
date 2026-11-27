@@ -128,7 +128,7 @@ const AIInsights = ({selectedState}: AIInsightsProps) => {
 						</Card>
 					))}
 				</div>
-				<div className='p-4 border-t border-border'>
+				{/* <div className='p-4 border-t border-border'>
 					<Card className='p-3 bg-primary/10 border-primary/30'>
 						<div className='flex items-start gap-2'>
 							<TrendingUp className='w-4 h-4 text-primary shrink-0 mt-0.5' />
@@ -143,7 +143,7 @@ const AIInsights = ({selectedState}: AIInsightsProps) => {
 							</div>
 						</div>
 					</Card>
-				</div>
+				</div> */}
 			</div>
 		</aside>
 	);
