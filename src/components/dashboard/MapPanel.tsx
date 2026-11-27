@@ -18,6 +18,11 @@ import NigeriaBorders from './NigeriaBoarder';
 import SiteDetailModal from './SiteDetailModal';
 import nigeriaStates from '@/data/nigeria-states.json';
 import { useState, useCallback, useMemo, useRef, useEffect } from 'react';
+import {
+	fetchMonitorCsv,
+	parseCSVToWaterSites,
+	type MapFocusLocation,
+} from '@/lib/monitor-dataset';
 
 interface StateFeature {
 	type: string;
@@ -44,6 +49,7 @@ interface MapPanelProps {
 	activeLayer: string;
 	onLayerChange: (layer: string) => void;
 	onSelectState?: (state: string | null) => void;
+	focusLocation?: MapFocusLocation | null;
 }
 
 const layers = [
@@ -55,97 +61,6 @@ const layers = [
 
 // Google Maps API Key from environment
 const MAPS_API_KEY = import.meta.env.VITE_GOOGLE_MAPS_API_KEY;
-
-// Utility function to convert Google Sheets URL to CSV export format
-const getGoogleSheetsCSVUrl = (spreadsheetId: string, gid: string) => {
-	return `https://docs.google.com/spreadsheets/d/${spreadsheetId}/export?format=csv&gid=${gid}`;
-};
-
-// Extract the spreadsheet id and gid from a Google Sheets URL
-const parseSheetUrl = (url: string) => {
-	const id = url.match(/\/d\/([a-zA-Z0-9-_]+)/)?.[1] ?? '';
-	const gid = url.match(/[?#&]gid=(\d+)/)?.[1] ?? '0';
-	return { id, gid };
-};
-
-// Function to parse CSV data and convert to WaterSite format
-const parseCSVToWaterSites = (csvText: string): WaterSite[] => {
-	const lines = csvText.trim().split('\n');
-	const headers = lines[0].split(',');
-
-	return lines.slice(1).map((line, index) => {
-		const values = line.split(',');
-		const data: Record<string, string> = {};
-
-		headers.forEach((header, i) => {
-			data[header.trim()] = values[i]?.trim() || '';
-		});
-
-		// Determine status based on health risk level
-		let status: 'optimal' | 'warning' | 'critical' = 'optimal';
-		if (data['HEALTH RISK LEVEL'] === 'High') status = 'critical';
-		else if (data['HEALTH RISK LEVEL'] === 'Moderate') status = 'warning';
-
-		// Generate uptime based on status and scarcity
-		let uptime = 98;
-		if (status === 'critical') uptime = Math.random() * 20 + 70; // 70-90%
-		else if (status === 'warning')
-			uptime = Math.random() * 10 + 85; // 85-95%
-		else uptime = Math.random() * 5 + 95; // 95-100%
-
-		return {
-			id: `${data['STATES']?.substring(0, 2).toUpperCase()}-${String(
-				index + 1
-			).padStart(3, '0')}`,
-			name: `${data['STATES']} ${data['WATER INFRASTRUCTURE POINTS']} ${index + 1
-				}`,
-			type: 'borehole' as const,
-			state: data['STATES'] || '',
-			coordinates: [
-				parseFloat(data['LONGTITUDE']) || 0,
-				parseFloat(data['LATITUDE']) || 0,
-			] as [number, number],
-			quality: {
-				ph: parseFloat(data['pH LEVEL']) || 7,
-				turbidity: parseFloat(data['WATER TURBIDITY']) || 0,
-				chlorine: parseFloat(data['CHLORINE LEVEL']) || 0,
-			},
-			uptime: Math.round(uptime * 10) / 10,
-			status,
-			lastMaintenance: new Date(
-				Date.now() - Math.random() * 90 * 24 * 60 * 60 * 1000
-			)
-				.toISOString()
-				.split('T')[0],
-			// peopleServed: Math.floor(Math.random() * 5000) + 2000,
-			peopleServed: Number(data['PEOPLE SERVED']) || 0,
-			pumpType: data['PUMP TYPE'] || 'Motorized',
-			contamination: parseFloat(data['CONTAMINATION']) || 0,
-			healthRisk: data['HEALTH RISK LEVEL'] || 'Low',
-			scarcity: data['SCARCITY'] === 'TRUE',
-			principal: data['PRINCIPAL'] || '',
-			isMonitored: data['IS MONITORED']?.toUpperCase() === 'TRUE',
-			flowRate:
-				(data['PUMP TYPE'] || '').toLowerCase().includes('hand')
-					? ''
-					: data['FLOW_RATE'] || '',
-			movementRate:
-				data['MOVEMENT_RATE'] &&
-				data['MOVEMENT_RATE'].toUpperCase() !== 'NULL'
-					? data['MOVEMENT_RATE']
-					: (data['PUMP TYPE'] || '').toLowerCase().includes('hand') &&
-					  data['FLOW_RATE'] &&
-					  data['FLOW_RATE'].toUpperCase() !== 'NULL'
-					? data['FLOW_RATE']
-					: '',
-			waterQualityRate:
-				data['WATER_QUALITY_RATE'] &&
-				data['WATER_QUALITY_RATE'].toUpperCase() !== 'NULL'
-					? data['WATER_QUALITY_RATE']
-					: '',
-		};
-	});
-};
 
 // Identify GEOTEK sites that are actively monitored
 const isGeotekMonitored = (s: WaterSite) =>
@@ -188,6 +103,7 @@ const MapPanel = ({
 	activeLayer,
 	onLayerChange,
 	onSelectState,
+	focusLocation = null,
 }: MapPanelProps) => {
 	const [selectedSite, setSelectedSite] = useState<WaterSite | null>(null);
 	const [hoveredState, setHoveredState] = useState<string | null>(null);
@@ -287,71 +203,45 @@ const MapPanel = ({
 		return { lat: 9.082, lng: 8.6753 };
 	}, []);
 
-	// Focus map on selected state
+	// Focus map on selected state (skipped when a specific location is focused)
 	useEffect(() => {
+		if (focusLocation) return;
 		if (selectedState && mapRef.current) {
-			console.log(`Focusing on state: ${selectedState}`);
 			const stateCenter = getStateCenter(selectedState);
-			console.log(`State center coordinates:`, stateCenter);
 			mapRef.current.setCenter(stateCenter);
-			mapRef.current.setZoom(8); // Zoom in to state level
+			mapRef.current.setZoom(8);
 		}
-	}, [selectedState, getStateCenter]);
+	}, [selectedState, getStateCenter, focusLocation]);
+
+	// Focus map on a specific location from the state navigator
+	useEffect(() => {
+		if (focusLocation && mapRef.current) {
+			mapRef.current.setCenter({
+				lat: focusLocation.lat,
+				lng: focusLocation.lng,
+			});
+			mapRef.current.setZoom(14);
+		}
+	}, [focusLocation]);
 
 	// Load CSV data on component mount
 	useEffect(() => {
 		const loadCSVData = async () => {
 			try {
-				// Derive the spreadsheet id + gid from the configured .env URL
-				const { id: spreadsheetId, gid } = parseSheetUrl(
-					import.meta.env.VITE_GEOTEK_MONITOR_DATA_SET_URL ?? ''
-				);
-				const csvUrl = getGoogleSheetsCSVUrl(spreadsheetId, gid);
-
-				const response = await fetch(csvUrl);
-
-				if (!response.ok) {
-					throw new Error(
-						`Failed to fetch data: ${response.status} ${response.statusText}`
-					);
-				}
-
-				const csvText = await response.text();
-
-				if (!csvText || csvText.trim().length === 0) {
-					throw new Error('Empty CSV data received');
-				}
-
+				const csvText = await fetchMonitorCsv();
 				const sites = parseCSVToWaterSites(csvText);
 
 				if (sites.length === 0) {
 					console.warn('No water sites parsed from CSV data');
 				}
 
-				console.log('[SITE-LENGTH', sites.filter((site)=> site.principal.toUpperCase() !== "FALSE").length);
-
-				setWaterSites(sites.filter((site)=> site.principal.toUpperCase() !== "FALSE"));
+				setWaterSites(
+					sites.filter(
+						(site) => site.principal?.toUpperCase() !== 'FALSE'
+					)
+				);
 			} catch (error) {
 				console.error('Error loading CSV data:', error);
-
-				// Fallback to local dataset if Google Sheets fails
-				try {
-					console.log(
-						'Attempting to load local dataset as fallback...'
-					);
-					const fallbackResponse = await fetch('/dataset.csv');
-					const fallbackCsvText = await fallbackResponse.text();
-					const fallbackSites = parseCSVToWaterSites(fallbackCsvText);
-					// setWaterSites(fallbackSites);
-					console.log(
-						'Successfully loaded local dataset as fallback'
-					);
-				} catch (fallbackError) {
-					console.error(
-						'Fallback to local dataset also failed:',
-						fallbackError
-					);
-				}
 			} finally {
 				setTimeout(() => {
 					setLoading(false);
@@ -496,34 +386,80 @@ const MapPanel = ({
 							setSelectedSite={setSelectedSite}
 						/>
 						{/* Water Site Markers */}
-						{filteredSites.map((site) => (
-							<AdvancedMarker
-								key={site.id}
-								position={{
-									lat: site.coordinates[1],
-									lng: site.coordinates[0],
-								}}
-								onClick={() => handleSiteClick(site)}
-							>
-								<div
-									className='cursor-pointer'
-									style={{
-										width: '16px',
-										height: '16px',
-										backgroundColor: getMarkerColor(
-											site.status
-										),
-										border: `2.5px solid ${getPumpTypeBorderColor(site.pumpType)}`,
-										boxShadow: '0 2px 4px rgba(0,0,0,0.3)',
-										animation:
-											site.status === 'critical'
-												? 'pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite'
-												: undefined,
-										...getMarkerShape(site.principal),
+						{filteredSites.map((site) => {
+							const isFocused =
+								!!focusLocation &&
+								(focusLocation.id === site.id ||
+									(Math.abs(
+										focusLocation.lat - site.coordinates[1]
+									) < 1e-6 &&
+										Math.abs(
+											focusLocation.lng -
+												site.coordinates[0]
+										) < 1e-6));
+
+							return (
+								<AdvancedMarker
+									key={site.id}
+									position={{
+										lat: site.coordinates[1],
+										lng: site.coordinates[0],
 									}}
-								/>
-							</AdvancedMarker>
-						))}
+									zIndex={isFocused ? 1000 : undefined}
+									onClick={() => handleSiteClick(site)}
+								>
+									<div
+										className='relative flex items-center justify-center cursor-pointer'
+										style={{
+											width: isFocused ? 36 : 16,
+											height: isFocused ? 36 : 16,
+										}}
+									>
+										{isFocused && (
+											<span
+												aria-hidden
+												className='absolute inset-0 rounded-full'
+												style={{
+													backgroundColor:
+														'rgba(14, 165, 233, 0.35)',
+													animation:
+														'marker-ping 1.2s cubic-bezier(0, 0, 0.2, 1) infinite',
+												}}
+											/>
+										)}
+										<div
+											style={{
+												width: isFocused ? 22 : 16,
+												height: isFocused ? 22 : 16,
+												backgroundColor: getMarkerColor(
+													site.status
+												),
+												border: `2.5px solid ${
+													isFocused
+														? '#0ea5e9'
+														: getPumpTypeBorderColor(
+																site.pumpType
+														  )
+												}`,
+												boxShadow: isFocused
+													? '0 0 0 3px rgba(14, 165, 233, 0.45), 0 4px 10px rgba(0,0,0,0.35)'
+													: '0 2px 4px rgba(0,0,0,0.3)',
+												animation: isFocused
+													? 'marker-bounce 0.9s ease-in-out infinite'
+													: site.status === 'critical'
+													? 'pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite'
+													: undefined,
+												position: 'relative',
+												zIndex: 1,
+												...getMarkerShape(
+													site.principal
+												),
+											}}
+										/>
+									</div>
+								</AdvancedMarker>
+							);
+						})}
 
 						<NigeriaBorders
 							selectedState={selectedState}
@@ -801,6 +737,27 @@ const MapPanel = ({
           50% {
             opacity: 0.6;
             scale: 1.3;
+          }
+        }
+        @keyframes marker-bounce {
+          0%, 100% {
+            transform: translateY(0) scale(1);
+          }
+          40% {
+            transform: translateY(-8px) scale(1.15);
+          }
+          60% {
+            transform: translateY(-2px) scale(1.05);
+          }
+        }
+        @keyframes marker-ping {
+          0% {
+            transform: scale(0.6);
+            opacity: 0.8;
+          }
+          75%, 100% {
+            transform: scale(2.2);
+            opacity: 0;
           }
         }
       `}</style>

@@ -3,6 +3,7 @@ export interface WaterSite {
 	name: string;
 	type: 'borehole' | 'treatment' | 'kiosk';
 	state: string;
+	community?: string;
 	coordinates: [number, number]; // [longitude, latitude]
 	quality: {
 		ph: number;

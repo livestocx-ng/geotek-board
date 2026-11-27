@@ -1,12 +1,15 @@
-import {useState} from 'react';
+import { useState } from 'react';
 import StateNavigator from '@/components/dashboard/StateNavigator';
 import MapPanel from '@/components/dashboard/MapPanel';
 import AIInsights from '@/components/dashboard/AIInsights';
 import KPIRibbon from '@/components/dashboard/KPIRibbon';
 import DashboardHeader from '@/components/dashboard/DashboardHeader';
+import type { MapFocusLocation } from '@/lib/monitor-dataset';
 
 const Index = () => {
 	const [selectedState, setSelectedState] = useState<string | null>(null);
+	const [focusLocation, setFocusLocation] =
+		useState<MapFocusLocation | null>(null);
 	const [activeLayer, setActiveLayer] = useState<string>('infrastructure');
 	const [showStateNav, setShowStateNav] = useState(false);
 
@@ -22,9 +25,11 @@ const Index = () => {
 				{/* Left Sidebar - State Navigator */}
 				<StateNavigator
 					selectedState={selectedState}
-					onSelectState={(state) => {
-						setSelectedState(state);
-						setShowStateNav(false); // Auto-close on mobile after selection
+					selectedLocationId={focusLocation?.id ?? null}
+					onSelectLocation={(location) => {
+						setSelectedState(location.state);
+						setFocusLocation(location);
+						setShowStateNav(false);
 					}}
 					showStateNav={showStateNav}
 				/>
@@ -42,7 +47,11 @@ const Index = () => {
 					selectedState={selectedState}
 					activeLayer={activeLayer}
 					onLayerChange={setActiveLayer}
-					onSelectState={setSelectedState}
+					focusLocation={focusLocation}
+					onSelectState={(state) => {
+						setSelectedState(state);
+						setFocusLocation(null);
+					}}
 				/>
 
 				{/* Right Panel - AI Insights - Hidden on mobile */}

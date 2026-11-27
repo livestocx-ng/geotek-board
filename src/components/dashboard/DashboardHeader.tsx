@@ -1,10 +1,7 @@
-import {Activity, Database, Menu, X, BookOpen} from 'lucide-react';
+import {Menu, X, BookOpen, List} from 'lucide-react';
 import {Button} from '@/components/ui/button';
-import {useState} from 'react';
 import {Link} from 'react-router-dom';
 import {toast} from 'sonner';
-
-import DataRequestModal from './DataRequestModal';
 
 interface DashboardHeaderProps {
 	showStateNav?: boolean;
@@ -17,8 +14,6 @@ const DashboardHeader = ({
 	onToggleStateNav,
 	selectedState,
 }: DashboardHeaderProps) => {
-	const [isModalOpen, setIsModalOpen] = useState(false);
-
 	return (
 		<header className='fixed w-full top-0 z-50 h-16 bg-dashboard-panel border-b border-border flex items-center justify-between px-3 sm:px-6 py-2 sm:py-4'>
 			<div className='flex items-center gap-2 sm:gap-3'>
@@ -66,16 +61,28 @@ const DashboardHeader = ({
 					)}
 				</div>
 
-				<Link to='/appendix'>
-					<Button
-						variant='outline'
-						size='sm'
-						className='flex items-center gap-2 ml-10'
-					>
-						<BookOpen className='w-4 h-4' />
-						<span className='hidden sm:inline'>Appendix</span>
-					</Button>
-				</Link>
+				<div className='flex items-center gap-2 ml-4 sm:ml-10'>
+					<Link to='/appendix'>
+						<Button
+							variant='outline'
+							size='sm'
+							className='flex items-center gap-2'
+						>
+							<BookOpen className='w-4 h-4' />
+							<span className='hidden sm:inline'>Appendix</span>
+						</Button>
+					</Link>
+					<Link to='/locations'>
+						<Button
+							variant='outline'
+							size='sm'
+							className='flex items-center gap-2'
+						>
+							<List className='w-4 h-4' />
+							<span className='hidden sm:inline'>List of Sites</span>
+						</Button>
+					</Link>
+				</div>
 			</div>
 
 			<div className='flex items-center gap-2 sm:gap-4'>

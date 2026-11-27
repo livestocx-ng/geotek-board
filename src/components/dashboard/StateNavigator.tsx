@@ -1,98 +1,122 @@
-import {useState} from 'react';
-import {Search, AlertTriangle, CheckCircle2, AlertCircle} from 'lucide-react';
-import {Input} from '@/components/ui/input';
-import {ScrollArea} from '@/components/ui/scroll-area';
-import {Badge} from '@/components/ui/badge';
-import {cn} from '@/lib/utils';
-
-interface StateData {
-	name: string;
-	uptime: number;
-	peopleServed: number;
-	riskLevel: 'low' | 'medium' | 'high';
-}
-
-const mockStates: StateData[] = [
-	{name: 'Abia', uptime: 89, peopleServed: 12500, riskLevel: 'medium'},
-	{name: 'Adamawa', uptime: 76, peopleServed: 11200, riskLevel: 'high'},
-	{name: 'Akwa Ibom', uptime: 93, peopleServed: 18700, riskLevel: 'low'},
-	{name: 'Anambra', uptime: 95, peopleServed: 19800, riskLevel: 'low'},
-	{name: 'Bauchi', uptime: 81, peopleServed: 14300, riskLevel: 'medium'},
-	{name: 'Bayelsa', uptime: 87, peopleServed: 8900, riskLevel: 'medium'},
-	{name: 'Benue', uptime: 84, peopleServed: 16400, riskLevel: 'medium'},
-	{name: 'Borno', uptime: 72, peopleServed: 9800, riskLevel: 'high'},
-	{name: 'Cross River', uptime: 90, peopleServed: 13600, riskLevel: 'low'},
-	{name: 'Delta', uptime: 92, peopleServed: 17200, riskLevel: 'low'},
-	{name: 'Ebonyi', uptime: 86, peopleServed: 10800, riskLevel: 'medium'},
-	{name: 'Edo', uptime: 91, peopleServed: 15900, riskLevel: 'low'},
-	{name: 'Ekiti', uptime: 88, peopleServed: 11700, riskLevel: 'medium'},
-	{name: 'Enugu', uptime: 94, peopleServed: 14300, riskLevel: 'low'},
-	{name: 'Abuja FCT', uptime: 99, peopleServed: 28000, riskLevel: 'low'},
-	{name: 'Gombe', uptime: 79, peopleServed: 12100, riskLevel: 'high'},
-	{name: 'Imo', uptime: 90, peopleServed: 16800, riskLevel: 'low'},
-	{name: 'Jigawa', uptime: 77, peopleServed: 13400, riskLevel: 'high'},
-	{name: 'Kaduna', uptime: 92, peopleServed: 15200, riskLevel: 'medium'},
-	{name: 'Kano', uptime: 85, peopleServed: 18500, riskLevel: 'high'},
-	{name: 'Katsina', uptime: 80, peopleServed: 14700, riskLevel: 'medium'},
-	{name: 'Kebbi', uptime: 75, peopleServed: 11900, riskLevel: 'high'},
-	{name: 'Kogi', uptime: 87, peopleServed: 13800, riskLevel: 'medium'},
-	{name: 'Kwara', uptime: 89, peopleServed: 12900, riskLevel: 'medium'},
-	{name: 'Lagos', uptime: 98, peopleServed: 25000, riskLevel: 'low'},
-	{name: 'Nasarawa', uptime: 83, peopleServed: 11600, riskLevel: 'medium'},
-	{name: 'Niger', uptime: 82, peopleServed: 15300, riskLevel: 'medium'},
-	{name: 'Ogun', uptime: 93, peopleServed: 17500, riskLevel: 'low'},
-	{name: 'Ondo', uptime: 91, peopleServed: 14800, riskLevel: 'low'},
-	{name: 'Osun', uptime: 89, peopleServed: 13200, riskLevel: 'medium'},
-	{name: 'Oyo', uptime: 88, peopleServed: 16800, riskLevel: 'medium'},
-	{name: 'Plateau', uptime: 91, peopleServed: 13700, riskLevel: 'medium'},
-	{name: 'Rivers', uptime: 96, peopleServed: 21000, riskLevel: 'low'},
-	{name: 'Sokoto', uptime: 78, peopleServed: 12400, riskLevel: 'high'},
-	{name: 'Taraba', uptime: 74, peopleServed: 10500, riskLevel: 'high'},
-	{name: 'Yobe', uptime: 73, peopleServed: 9200, riskLevel: 'high'},
-	{name: 'Zamfara', uptime: 76, peopleServed: 10900, riskLevel: 'high'},
-];
+import { useEffect, useMemo, useState } from 'react';
+import { Search, MapPin, Loader2 } from 'lucide-react';
+import { Input } from '@/components/ui/input';
+import { Badge } from '@/components/ui/badge';
+import {
+	Accordion,
+	AccordionContent,
+	AccordionItem,
+	AccordionTrigger,
+} from '@/components/ui/accordion';
+import { cn } from '@/lib/utils';
+import { WaterSite } from '@/data/water-sites';
+import {
+	fetchMonitorSites,
+	type MapFocusLocation,
+} from '@/lib/monitor-dataset';
 
 interface StateNavigatorProps {
 	selectedState: string | null;
-	onSelectState: (state: string) => void;
+	selectedLocationId?: string | null;
+	onSelectLocation: (location: MapFocusLocation) => void;
 	showStateNav?: boolean;
 }
 
+const hasValidCoords = (site: WaterSite) => {
+	const [lng, lat] = site.coordinates;
+	return Number.isFinite(lat) && Number.isFinite(lng) && (lat !== 0 || lng !== 0);
+};
+
+const locationLabel = (site: WaterSite) =>
+	site.community?.trim() || site.name;
+
 const StateNavigator = ({
 	selectedState,
-	onSelectState,
+	selectedLocationId = null,
+	onSelectLocation,
 	showStateNav = false,
 }: StateNavigatorProps) => {
 	const [searchTerm, setSearchTerm] = useState('');
+	const [sites, setSites] = useState<WaterSite[]>([]);
+	const [loading, setLoading] = useState(true);
+	const [error, setError] = useState<string | null>(null);
+	const [openStates, setOpenStates] = useState<string[]>([]);
 
-	const filteredStates = mockStates.filter((state) =>
-		state.name.toLowerCase().includes(searchTerm.toLowerCase())
-	);
+	useEffect(() => {
+		let cancelled = false;
 
-	const getRiskIcon = (level: string) => {
-		switch (level) {
-			case 'low':
-				return <CheckCircle2 className='w-4 h-4 text-metric-success' />;
-			case 'medium':
-				return <AlertCircle className='w-4 h-4 text-metric-warning' />;
-			case 'high':
-				return <AlertTriangle className='w-4 h-4 text-metric-danger' />;
-			default:
-				return null;
+		const load = async () => {
+			try {
+				setLoading(true);
+				setError(null);
+				const data = await fetchMonitorSites();
+				if (cancelled) return;
+				setSites(data.filter(hasValidCoords));
+			} catch (err) {
+				console.error('Failed to load monitor sites:', err);
+				if (!cancelled) {
+					setError('Failed to load locations');
+					setSites([]);
+				}
+			} finally {
+				if (!cancelled) setLoading(false);
+			}
+		};
+
+		load();
+		return () => {
+			cancelled = true;
+		};
+	}, []);
+
+	const groupedByState = useMemo(() => {
+		const query = searchTerm.trim().toLowerCase();
+		const groups = new Map<string, WaterSite[]>();
+
+		for (const site of sites) {
+			const state = site.state?.trim();
+			if (!state) continue;
+
+			if (query) {
+				const matchesState = state.toLowerCase().includes(query);
+				const matchesCommunity = locationLabel(site)
+					.toLowerCase()
+					.includes(query);
+				if (!matchesState && !matchesCommunity) continue;
+			}
+
+			const list = groups.get(state) ?? [];
+			list.push(site);
+			groups.set(state, list);
 		}
-	};
 
-	const getRiskColor = (level: string) => {
-		switch (level) {
-			case 'low':
-				return 'bg-metric-success/10 text-metric-success border-metric-success/20';
-			case 'medium':
-				return 'bg-metric-warning/10 text-metric-warning border-metric-warning/20';
-			case 'high':
-				return 'bg-metric-danger/10 text-metric-danger border-metric-danger/20';
-			default:
-				return '';
+		return Array.from(groups.entries())
+			.sort(([a], [b]) => a.localeCompare(b))
+			.map(([state, locations]) => ({ state, locations }));
+	}, [sites, searchTerm]);
+
+	// Auto-expand matching states while searching
+	useEffect(() => {
+		if (searchTerm.trim()) {
+			setOpenStates(groupedByState.map((g) => g.state));
 		}
+	}, [searchTerm, groupedByState]);
+
+	// Keep the selected state's accordion open
+	useEffect(() => {
+		if (selectedState && !openStates.includes(selectedState)) {
+			setOpenStates((prev) => [...prev, selectedState]);
+		}
+		// eslint-disable-next-line react-hooks/exhaustive-deps
+	}, [selectedState]);
+
+	const handleLocationClick = (site: WaterSite) => {
+		onSelectLocation({
+			id: site.id,
+			lat: site.coordinates[1],
+			lng: site.coordinates[0],
+			state: site.state,
+		});
 	};
 
 	return (
@@ -101,21 +125,20 @@ const StateNavigator = ({
 				`flex flex-col border-r border-border bg-white
          transition-transform duration-300 ease-in-out
          ${
-				showStateNav
-					? 'translate-x-0'
-					: '-translate-x-full md:translate-x-0'
-			}
+			showStateNav
+				? 'translate-x-0'
+				: '-translate-x-full md:translate-x-0'
+		}
          absolute md:relative top-16 left-0 z-30 md:z-auto
-         w-full md:w-60 h-[calc(100vh-4rem)] md:h-screen`
+         w-full md:w-72 h-[calc(100vh-4rem)] md:h-screen`
 			)}
 		>
-			{/* Header */}
-			<div className='p-4 border-b border-border '>
+			<div className='p-4 border-b border-border'>
 				<h2 className='text-lg font-semibold mb-3'>State Navigator</h2>
 				<div className='relative'>
 					<Search className='absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground' />
 					<Input
-						placeholder='Search states...'
+						placeholder='Search states or locations...'
 						value={searchTerm}
 						onChange={(e) => setSearchTerm(e.target.value)}
 						className='pl-9 bg-background/50'
@@ -123,66 +146,84 @@ const StateNavigator = ({
 				</div>
 			</div>
 
-			{/* Scrollbar added here oh */}
 			<div className='flex-1 h-full overflow-auto pb-40'>
-				<div className='p-2 space-y- pb-24'>
-					{filteredStates.map((state) => (
-						<button
-							key={state.name}
-							onClick={() => onSelectState(state.name)}
-							className={cn(
-								'w-full p-3 roundedlg transition-all hover:bg-dashboard-elevated text-left border-b',
-								selectedState === state.name &&
-									'bg-dashboard-elevated ring-1 ring-primary/50'
-							)}
-						>
-							<div className='flex items-start justify-between mb-2'>
-								<span className='font-medium'>
-									{state.name}
-								</span>
-								{/* {getRiskIcon(state.riskLevel)} */}
-								<Badge
-									variant='outline'
+				{loading && (
+					<div className='flex items-center justify-center gap-2 p-8 text-sm text-muted-foreground'>
+						<Loader2 className='w-4 h-4 animate-spin' />
+						Loading locations...
+					</div>
+				)}
+
+				{!loading && error && (
+					<div className='p-4 text-sm text-metric-danger'>{error}</div>
+				)}
+
+				{!loading && !error && groupedByState.length === 0 && (
+					<div className='p-4 text-sm text-muted-foreground'>
+						No locations found.
+					</div>
+				)}
+
+				{!loading && !error && groupedByState.length > 0 && (
+					<Accordion
+						type='multiple'
+						value={openStates}
+						onValueChange={setOpenStates}
+						className='px-2 pb-24'
+					>
+						{groupedByState.map(({ state, locations }) => (
+							<AccordionItem
+								key={state}
+								value={state}
+								className='border-b border-border'
+							>
+								<AccordionTrigger
 									className={cn(
-										'text-[8px]',
-										getRiskColor(state.riskLevel)
+										'px-2 py-3 text-sm hover:no-underline',
+										selectedState === state &&
+											'text-primary'
 									)}
 								>
-									{state.riskLevel.toUpperCase()} RISK
-								</Badge>
-							</div>
-
-							<div className='space-y-1.5'>
-								<div className='flex items-center justify-between text-xs'>
-									<span className='text-muted-foreground'>
-										Uptime
+									<span className='flex items-center gap-2 min-w-0'>
+										<span className='truncate font-medium'>
+											{state}
+										</span>
+										<Badge
+											variant='outline'
+											className='text-[10px] shrink-0'
+										>
+											{locations.length}
+										</Badge>
 									</span>
-									<span className='font-medium'>
-										{state.uptime}%
-									</span>
-								</div>
-								{/* <div className='flex items-center justify-between text-xs'>
-									<span className='text-muted-foreground'>
-										People Served
-									</span>
-									<span className='font-medium'>
-										{state.peopleServed.toLocaleString()}
-									</span>
-								</div> */}
-							</div>
-
-							{/* <Badge
-								variant='outline'
-								className={cn(
-									'mt-2 text-[10px]',
-									getRiskColor(state.riskLevel)
-								)}
-							>
-								{state.riskLevel.toUpperCase()} RISK
-							</Badge> */}
-						</button>
-					))}
-				</div>
+								</AccordionTrigger>
+								<AccordionContent className='pb-2'>
+									<div className='space-y-1'>
+										{locations.map((site) => (
+											<button
+												key={site.id}
+												type='button'
+												onClick={() =>
+													handleLocationClick(site)
+												}
+												className={cn(
+													'w-full flex items-start gap-2 rounded-md px-2 py-2 text-left text-xs transition-colors hover:bg-dashboard-elevated',
+													selectedLocationId ===
+														site.id &&
+														'bg-dashboard-elevated ring-1 ring-primary/50'
+												)}
+											>
+												<MapPin className='w-3.5 h-3.5 mt-0.5 shrink-0 text-muted-foreground' />
+												<span className='leading-snug text-foreground/90'>
+													{locationLabel(site)}
+												</span>
+											</button>
+										))}
+									</div>
+								</AccordionContent>
+							</AccordionItem>
+						))}
+					</Accordion>
+				)}
 			</div>
 		</aside>
 	);
